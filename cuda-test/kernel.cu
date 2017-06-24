@@ -9,6 +9,7 @@
 #define BOOL int
 #define FALSE 0
 #define TRUE 1
+#define UINT unsigned int
 
 struct Point2F
 {
@@ -27,16 +28,20 @@ struct PolygonCount
 
 cudaError_t countPolygonsWithCuda(
 	const Polygon* polygons,
-	unsigned int polygonCount,
-	unsigned int num_threads,
-	unsigned int& count_ccw,
-	unsigned int& count_cw);
-int randInt(int max);
+	const UINT polygonCount,
+	const UINT num_threads,
+	UINT& count_ccw,
+	UINT& count_cw);
+void countPolygonsSequencial(
+	const Polygon* polygons,
+	const UINT polygonCount,
+	UINT& count_ccw,
+	UINT& count_cw);
 float randSingle(float max);
-void genRndPolygons(Polygon* first, const int length);
-__host__ __device__ BOOL isPolygonCCW(const Polygon& polygon);
+void genRndPolygons(Polygon* first, const UINT length);
+void runPerformanceTest(const UINT polygonCount, const UINT gpuThreads);
 
-__host__ __device__ BOOL isPolygonCCW(const Polygon& polygon)
+__host__  __device__ BOOL isPolygonCCW(const Polygon& polygon)
 {
 	// See http://www.geeksforgeeks.org/orientation-3-ordered-points/
 	// for details of below formula.
@@ -49,7 +54,7 @@ __host__ __device__ BOOL isPolygonCCW(const Polygon& polygon)
 	return (val > 0) ? FALSE : TRUE; // clock or counterclock wise
 }
 
-__global__ void countPolygons(const Polygon* polygons, PolygonCount* res, unsigned int div_size)
+__global__ void countPolygonsKernel(const Polygon* polygons, PolygonCount* res, const unsigned int div_size)
 {
 	int start = threadIdx.x * div_size;
 
@@ -74,49 +79,18 @@ __global__ void countPolygons(const Polygon* polygons, PolygonCount* res, unsign
 
 int main()
 {
-	const int polygonCount = 1000;
-	Polygon polygons[polygonCount];
+	runPerformanceTest(10, 10);
 
-	genRndPolygons(polygons, polygonCount);
-	
-	unsigned int count_ccw, count_cw;
-
-	clock_t t_begin = clock();
-
-	// Add vectors in parallel.
-	cudaError_t cudaStatus = countPolygonsWithCuda(polygons, polygonCount, 10, count_ccw, count_cw);
-
-	clock_t t_end = clock();
-	double time_spent = (double)(t_end - t_begin) / CLOCKS_PER_SEC;
-
-	if (cudaStatus != cudaSuccess)
-	{
-		fprintf(stderr, "addWithCuda failed!");
-		return 1;
-	}
-	else
-	{
-		printf("CCW: %d;   CW: %d\n", count_ccw, count_cw);
-		printf("Time: %f", time_spent);
-	}
-
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess)
-	{
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
+	runPerformanceTest(100, 100);
+	runPerformanceTest(1000, 1000);
+	runPerformanceTest(10000, 1000);
+	runPerformanceTest(100000, 1000);
+	runPerformanceTest(1000000, 1000);
+	runPerformanceTest(10000000, 1000);
 
 	getchar();
 
     return 0;
-}
-
-int randInt(int max)
-{
-	return rand() % max;
 }
 
 float randSingle(float max)
@@ -124,11 +98,11 @@ float randSingle(float max)
 	return ((float)rand() / (float)RAND_MAX) * max;
 }
 
-void genRndPolygons(Polygon* first, const int length)
+void genRndPolygons(Polygon* first, const UINT length)
 {
-	for (int i = 0; i < length; i++)
+	for (UINT i = 0; i < length; i++)
 	{
-		for (int y = 0; y < POLYGON_SIZE; y++)
+		for (UINT y = 0; y < POLYGON_SIZE; y++)
 		{
 			first[i].points[y].x = randSingle(100.0);
 			first[i].points[y].y = randSingle(100.0);
@@ -136,12 +110,52 @@ void genRndPolygons(Polygon* first, const int length)
 	}
 }
 
+
+void runPerformanceTest(const UINT polygonCount, const UINT gpuThreads)
+{
+	// Generate polygons
+	Polygon* polygons = (Polygon*)malloc(sizeof(Polygon) * polygonCount);
+	genRndPolygons(polygons, polygonCount);
+
+	unsigned int count_ccw, count_cw;
+
+	// Parallel
+	clock_t t_begin = clock();
+	cudaError_t cudaStatus = countPolygonsWithCuda(polygons, polygonCount, gpuThreads, count_ccw, count_cw);
+	clock_t t_end = clock();
+	double time_spent_gpu = (double)(t_end - t_begin) / CLOCKS_PER_SEC;
+
+	// Sequencial 
+	t_begin = clock();
+	countPolygonsSequencial(polygons, polygonCount, count_ccw, count_cw);
+	t_end = clock();
+	double time_spent_sequential = (double)(t_end - t_begin) / CLOCKS_PER_SEC;
+
+	if (cudaStatus != cudaSuccess)
+		fprintf(stderr, "addWithCuda failed!");
+	else
+	{
+		printf("Performance with polygon count %d\n", polygonCount);
+		//printf("CCW: %d;   CW: %d\n", count_ccw, count_cw);
+		printf("\tGPU time: %f\n", time_spent_gpu);
+		printf("\tSequential time: %f\n\n", time_spent_sequential);
+	}
+
+	// cudaDeviceReset must be called before exiting in order for profiling and
+	// tracing tools such as Nsight and Visual Profiler to show complete traces.
+	cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess)
+		fprintf(stderr, "cudaDeviceReset failed!");
+
+	free(polygons);
+}
+
 cudaError_t countPolygonsWithCuda(
 	const Polygon* polygons,
-	const unsigned int polygonCount,
-	const unsigned int num_threads,
-	unsigned int& count_ccw,
-	unsigned int& count_cw)
+	const UINT polygonCount,
+	const UINT num_threads,
+	UINT& count_ccw,
+	UINT& count_cw)
 {
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaError_t cudaStatus = cudaSetDevice(0);
@@ -175,7 +189,7 @@ cudaError_t countPolygonsWithCuda(
 				{
 					unsigned int div_size = polygonCount / num_threads;
 
-					countPolygons<<<1, num_threads>>>(dev_poly, dev_res, div_size);
+					countPolygonsKernel <<<1, num_threads>>>(dev_poly, dev_res, div_size);
 
 					// Check for any errors launching the kernel
 					cudaStatus = cudaGetLastError();
@@ -192,7 +206,7 @@ cudaError_t countPolygonsWithCuda(
 							count_ccw = 0;
 							count_cw = 0;
 
-							for (int i = 0; i < num_threads; i++)
+							for (UINT i = 0; i < num_threads; i++)
 							{
 								count_ccw += res[i].count_ccw;
 								count_cw += res[i].count_cw;
@@ -215,4 +229,20 @@ cudaError_t countPolygonsWithCuda(
 	return cudaStatus;
 }
 
+void countPolygonsSequencial(
+	const Polygon* polygons,
+	const UINT polygonCount,
+	UINT& count_ccw,
+	UINT& count_cw)
+{
+	count_ccw = 0;
+	count_cw = 0;
 
+	for (UINT i = 0; i < polygonCount; i++)
+	{
+		if (isPolygonCCW(polygons[i]) == TRUE)
+			count_ccw++;
+		else
+			count_cw++;
+	}
+}
